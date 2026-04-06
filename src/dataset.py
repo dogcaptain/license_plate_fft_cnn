@@ -90,8 +90,10 @@ class CharDataset(Dataset):
         """
         img_path, label = self.samples[idx]
 
-        # 读取图像
-        img = cv2.imread(img_path)
+        # 读取图像 - 使用Python文件操作避免中文路径问题
+        with open(img_path, 'rb') as f:
+            img_array = np.frombuffer(f.read(), dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
         if img is None:
             # 如果读取失败，返回一个全零的图像
             img = np.zeros((*self.img_size, 3), dtype=np.uint8)

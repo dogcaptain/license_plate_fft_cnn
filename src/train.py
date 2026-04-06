@@ -20,6 +20,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,8 +29,8 @@ from src.dataset import CharDataset
 from src.model import build_model
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
-    """训练一个epoch"""
+def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None):
+    """训练一个epoch，支持混合精度训练"""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -37,14 +38,24 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
     pbar = tqdm(dataloader, desc="Training", leave=False)
     for images, labels in pbar:
-        images = images.to(device)
-        labels = labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+
+        # 混合精度训练（加速+省显存）
+        if scaler is not None:
+            with torch.amp.autocast('cuda'):
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
         running_loss += loss.item() * images.size(0)
         _, predicted = outputs.max(1)
@@ -60,18 +71,19 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
 @torch.no_grad()
 def validate(model, dataloader, criterion, device):
-    """在验证集上评估"""
+    """在验证集上评估，支持混合精度"""
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
 
     for images, labels in tqdm(dataloader, desc="Validating", leave=False):
-        images = images.to(device)
-        labels = labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        with torch.amp.autocast('cuda'):
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
         running_loss += loss.item() * images.size(0)
         _, predicted = outputs.max(1)
@@ -121,21 +133,30 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     train_dataset = CharDataset(split="train", mode=mode, augmentation=True)
     val_dataset = CharDataset(split="val", mode=mode, augmentation=False)
 
-    # DataLoader设置：Windows下num_workers=0避免多进程问题
-    # pin_memory=True加速GPU数据传输（当使用CUDA时）
+    # DataLoader优化设置
+    # num_workers: Windows建议用4-8，Linux可以用更多
+    # pin_memory: 加速GPU数据传输
+    # persistent_workers: 保持worker进程，减少启动开销
+    num_workers = 4 if device.type == "cuda" else 0
+    pin_memory = True if device.type == "cuda" else False
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0,
-        pin_memory=True if device.type == "cuda" else False
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=0,
-        pin_memory=True if device.type == "cuda" else False
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=True if num_workers > 0 else False,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     print(f"训练集样本数: {len(train_dataset)}")
@@ -145,6 +166,11 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     model = build_model(mode=mode).to(device)
     info = model.get_model_info()
     print(f"模型参数量: {info['total_params']:,}")
+
+    # 混合精度训练（RTX 5070支持FP16，加速训练）
+    scaler = torch.amp.GradScaler() if device.type == "cuda" else None
+    if scaler:
+        print("启用混合精度训练 (AMP)")
 
     # 损失函数和优化器
     criterion = nn.CrossEntropyLoss()
@@ -167,6 +193,12 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         "history": [],
     }
 
+    # TensorBoard日志
+    tb_dir = os.path.join(RESULTS_DIR, "tensorboard", model_name)
+    os.makedirs(tb_dir, exist_ok=True)
+    writer = SummaryWriter(tb_dir)
+    print(f"TensorBoard日志: {tb_dir}")
+
     # 最佳模型跟踪
     best_val_acc = 0.0
     best_epoch = 0
@@ -176,7 +208,7 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         print(f"\nEpoch {epoch}/{epochs}")
 
         # 训练
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device, scaler)
 
         # 验证
         val_loss, val_acc = validate(model, val_loader, criterion, device)
@@ -198,6 +230,13 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
         print(f"  Val Loss:   {val_loss:.4f}, Val Acc:   {val_acc:.4f}")
         print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+
+        # 写入TensorBoard
+        writer.add_scalar("Loss/train", train_loss, epoch)
+        writer.add_scalar("Loss/val", val_loss, epoch)
+        writer.add_scalar("Accuracy/train", train_acc, epoch)
+        writer.add_scalar("Accuracy/val", val_acc, epoch)
+        writer.add_scalar("LearningRate", scheduler.get_last_lr()[0], epoch)
 
         # 保存最佳模型
         if val_acc > best_val_acc:
@@ -225,11 +264,15 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     with open(log_path, "w", encoding="utf-8") as f:
         json.dump(train_log, f, indent=2, ensure_ascii=False)
 
+    # 关闭TensorBoard
+    writer.close()
+
     print("\n" + "=" * 60)
     print(f"训练完成！")
     print(f"  最佳验证准确率: {best_val_acc:.4f} (Epoch {best_epoch})")
     print(f"  模型保存位置: {best_model_path}")
     print(f"  日志保存位置: {log_path}")
+    print(f"  TensorBoard: tensorboard --logdir={tb_dir}")
     print("=" * 60)
 
     return model, train_log

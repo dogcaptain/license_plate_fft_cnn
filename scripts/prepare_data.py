@@ -1,8 +1,8 @@
 """
-车牌数据集预处理脚本
-支持：CCPD2019、CBLPRD-330k
+CBLPRD-330k 车牌数据集预处理脚本
+功能：解析标注文件 → 分割单个字符 → 按类别保存
 
-功能：解析车牌图片 → 分割单个字符 → 按类别保存
+标注格式：CBLPRD-330k/000272981.jpg 粤Z31632D 新能源大型车
 """
 import os
 import sys
@@ -13,72 +13,18 @@ import shutil
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import (
-    CCPD_DIR, CBLPRD_DIR, CHAR_DIR, CHAR_LIST, CHAR_IMG_SIZE,
-    PLATE_HEIGHT, PLATE_WIDTH, TRAIN_RATIO, VAL_RATIO, CHAR_TO_IDX
+    DATA_DIR, CBLPRD_TRAIN_TXT, CBLPRD_VAL_TXT,
+    CHAR_DIR, CHAR_LIST, CHAR_IMG_SIZE,
+    TRAIN_RATIO, VAL_RATIO, CHAR_TO_IDX
 )
 
 
-# ============================================================
-#  CCPD 数据集处理
-# ============================================================
-
-def parse_ccpd_filename(filename):
-    """解析CCPD文件名，提取车牌四顶点坐标和字符标签。"""
-    parts = filename.split("-")
-    if len(parts) < 7:
-        return None, None
-
-    try:
-        vertices_str = parts[3].split("_")
-        vertices = []
-        for v in vertices_str:
-            x, y = v.split("&")
-            vertices.append((int(x), int(y)))
-    except (ValueError, IndexError):
-        return None, None
-
-    try:
-        label_str = parts[4].split("_")
-        label_indices = [int(l) for l in label_str]
-        if len(label_indices) != 7:
-            return None, None
-    except (ValueError, IndexError):
-        return None, None
-
-    return vertices, label_indices
-
-
-def ccpd_index_to_char_index(position, ccpd_idx):
-    """将CCPD的字符索引转换为本项目的字符索引。"""
-    if position == 0:
-        return ccpd_idx
-    else:
-        if ccpd_idx < 24:
-            return 31 + ccpd_idx
-        else:
-            return 55 + (ccpd_idx - 24)
-
-
-def crop_plate(img, vertices):
-    """根据四顶点坐标透视变换裁切车牌区域。"""
-    pts_src = np.float32([vertices[2], vertices[3], vertices[0], vertices[1]])
-    pts_dst = np.float32([
-        [0, 0],
-        [PLATE_WIDTH - 1, 0],
-        [PLATE_WIDTH - 1, PLATE_HEIGHT - 1],
-        [0, PLATE_HEIGHT - 1]
-    ])
-    M = cv2.getPerspectiveTransform(pts_src, pts_dst)
-    plate = cv2.warpPerspective(img, M, (PLATE_WIDTH, PLATE_HEIGHT))
-    return plate
-
-
-def split_characters(plate_img):
-    """将车牌图像均匀分割为7个字符区域。"""
+def split_characters(plate_img, num_chars=7):
+    """将车牌图像均匀分割为指定数量的字符区域。"""
     h, w = plate_img.shape[:2]
-    char_width = w / 7.0
+    char_width = w / num_chars
     chars = []
-    for i in range(7):
+    for i in range(num_chars):
         x_start = int(i * char_width)
         x_end = int((i + 1) * char_width)
         char_img = plate_img[:, x_start:x_end]
@@ -87,135 +33,98 @@ def split_characters(plate_img):
     return chars
 
 
-def process_ccpd_dataset(subset="ccpd_base", max_images=None):
-    """处理CCPD数据集。"""
-    subset_dir = os.path.join(CCPD_DIR, subset)
-    if not os.path.exists(subset_dir):
-        print(f"[错误] 目录不存在: {subset_dir}")
-        print(f"请先下载CCPD数据集并放到 {CCPD_DIR} 目录下")
-        return
-
-    filenames = [f for f in os.listdir(subset_dir)
-                 if f.endswith((".jpg", ".png", ".jpeg"))]
-
-    if max_images:
-        filenames = filenames[:max_images]
-
-    print(f"正在处理 CCPD {subset}，共 {len(filenames)} 张图片...")
-
-    success_count = 0
-    fail_count = 0
-
-    for fname in tqdm(filenames, desc=f"处理{subset}"):
-        vertices, label_indices = parse_ccpd_filename(fname)
-        if vertices is None:
-            fail_count += 1
-            continue
-
-        img_path = os.path.join(subset_dir, fname)
-        img = cv2.imread(img_path)
-        if img is None:
-            fail_count += 1
-            continue
-
-        try:
-            plate = crop_plate(img, vertices)
-            chars = split_characters(plate)
-
-            for pos, (char_img, ccpd_idx) in enumerate(zip(chars, label_indices)):
-                char_index = ccpd_index_to_char_index(pos, ccpd_idx)
-                if char_index >= len(CHAR_LIST):
-                    continue
-
-                label = CHAR_LIST[char_index]
-                dir_name = f"{char_index:02d}_{label}"
-                save_dir = os.path.join(CHAR_DIR, dir_name)
-                os.makedirs(save_dir, exist_ok=True)
-
-                save_name = f"{fname.replace('.jpg', '').replace('.png', '')}_{pos}.jpg"
-                save_path = os.path.join(save_dir, save_name)
-                cv2.imwrite(save_path, char_img)
-
-            success_count += 1
-        except Exception as e:
-            fail_count += 1
-            continue
-
-    print(f"CCPD处理完成！成功: {success_count}, 失败: {fail_count}")
+def split_characters_8(plate_img):
+    """将8位车牌图像均匀分割为8个字符区域（新能源、教练车等）。"""
+    return split_characters(plate_img, num_chars=8)
 
 
-# ============================================================
-#  CBLPRD-330k 数据集处理
-# ============================================================
-
-def parse_cblprd_filename(filename):
+def parse_annotation_line(line):
     """
-    解析CBLPRD文件名，提取车牌字符。
-
-    CBLPRD文件名格式：车牌号.jpg
-    例如：京A12345.jpg、沪B67890.jpg
-
-    返回：字符列表（7个字符）
+    解析标注文件的一行。
+    格式：CBLPRD-330k/000272981.jpg 粤Z31632D 新能源大型车
     """
-    # 去掉扩展名
-    name = os.path.splitext(filename)[0]
-    # 有些文件名可能包含其他信息，用_分割取第一部分
-    name = name.split('_')[0]
+    parts = line.strip().split()
+    if len(parts) < 2:
+        return None, None, None
 
-    # 解析7个字符
+    img_rel_path = parts[0]
+    plate_number = parts[1]
+    plate_type = parts[2] if len(parts) > 2 else "未知"
+
+    img_path = os.path.join(DATA_DIR, img_rel_path)
+    return img_path, plate_number, plate_type
+
+
+def extract_chars_from_plate(plate_number):
+    """
+    从车牌号中提取字符。
+    支持7位（普通车牌）和8位（新能源、教练车、挂车等）。
+    """
     chars = []
-    i = 0
-    for c in name:
-        if c in CHAR_LIST and len(chars) < 7:
+    for c in plate_number:
+        if c in CHAR_LIST:
             chars.append(c)
 
-    if len(chars) != 7:
-        return None
-    return chars
+    if len(chars) >= 7:
+        return chars
+    return None
 
 
-def process_cblprd_dataset(subset="train", max_images=None):
-    """
-    处理CBLPRD-330k数据集。
+def process_dataset(subset="train", max_images=None):
+    """处理CBLPRD-330k数据集。"""
+    if subset == "train":
+        anno_file = CBLPRD_TRAIN_TXT
+    elif subset == "val":
+        anno_file = CBLPRD_VAL_TXT
+    else:
+        print(f"[错误] 不支持的子集: {subset}，只支持 train 和 val")
+        return
 
-    Args:
-        subset: 'train', 'val', 或 'test'
-        max_images: 最大处理图片数
-    """
-    subset_dir = os.path.join(CBLPRD_DIR, subset)
-    if not os.path.exists(subset_dir):
-        print(f"[错误] 目录不存在: {subset_dir}")
-        print(f"请先下载CBLPRD-330k数据集并放到 {CBLPRD_DIR} 目录下")
+    if not os.path.exists(anno_file):
+        print(f"[错误] 标注文件不存在: {anno_file}")
+        print(f"请先下载CBLPRD-330k数据集并放到 {DATA_DIR} 目录下")
         print(f"下载地址: https://github.com/SunlifeV/CBLPRD-330k")
         return
 
-    filenames = [f for f in os.listdir(subset_dir)
-                 if f.endswith((".jpg", ".png", ".jpeg", ".JPG", ".PNG"))]
+    with open(anno_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
 
     if max_images:
-        filenames = filenames[:max_images]
+        lines = lines[:max_images]
 
-    print(f"正在处理 CBLPRD-330k {subset}，共 {len(filenames)} 张图片...")
+    print(f"正在处理 CBLPRD-330k {subset}，共 {len(lines)} 张图片...")
 
     success_count = 0
     fail_count = 0
 
-    for fname in tqdm(filenames, desc=f"处理{subset}"):
-        chars = parse_cblprd_filename(fname)
+    for line in tqdm(lines, desc=f"处理{subset}"):
+        img_path, plate_number, plate_type = parse_annotation_line(line)
+        if img_path is None:
+            fail_count += 1
+            continue
+
+        chars = extract_chars_from_plate(plate_number)
         if chars is None:
             fail_count += 1
             continue
 
-        img_path = os.path.join(subset_dir, fname)
         img = cv2.imread(img_path)
         if img is None:
             fail_count += 1
             continue
 
         try:
-            # CBLPRD的图片已经是车牌区域，直接分割字符
-            plate_chars = split_characters(img)
+            # 根据字符数量决定分割方式
+            if len(chars) == 8:
+                plate_chars = split_characters_8(img)
+            else:
+                plate_chars = split_characters(img)
 
+            if len(plate_chars) < 7:
+                fail_count += 1
+                continue
+
+            # 保存每个字符
             for pos, (char_img, char) in enumerate(zip(plate_chars, chars)):
                 if char not in CHAR_TO_IDX:
                     continue
@@ -224,11 +133,11 @@ def process_cblprd_dataset(subset="train", max_images=None):
                 label = CHAR_LIST[char_index]
                 dir_name = f"{char_index:02d}_{label}"
 
-                # 根据subset保存到不同子目录
                 save_dir = os.path.join(CHAR_DIR, dir_name, subset)
                 os.makedirs(save_dir, exist_ok=True)
 
-                save_name = f"{fname.replace('.jpg', '').replace('.png', '')}_{pos}.jpg"
+                base_name = os.path.splitext(os.path.basename(img_path))[0]
+                save_name = f"{base_name}_{pos}.jpg"
                 save_path = os.path.join(save_dir, save_name)
                 cv2.imwrite(save_path, char_img)
 
@@ -240,21 +149,14 @@ def process_cblprd_dataset(subset="train", max_images=None):
     print(f"CBLPRD {subset} 处理完成！成功: {success_count}, 失败: {fail_count}")
 
 
-def process_cblprd_all(max_images_per_split=None):
-    """处理CBLPRD所有划分（train/val/test）。"""
-    for subset in ["train", "val", "test"]:
-        process_cblprd_dataset(subset, max_images_per_split)
+def process_all(max_images_per_split=None):
+    """处理所有划分（train/val）。"""
+    for subset in ["train", "val"]:
+        process_dataset(subset, max_images_per_split)
 
-
-# ============================================================
-#  通用工具函数
-# ============================================================
 
 def split_train_val_test():
-    """
-    将字符数据集划分为训练集/验证集/测试集。
-    在每个类别目录内创建 train/, val/, test/ 子目录。
-    """
+    """将字符数据集划分为训练集/验证集/测试集。"""
     if not os.path.exists(CHAR_DIR):
         print(f"[错误] 字符目录不存在: {CHAR_DIR}")
         return
@@ -264,7 +166,6 @@ def split_train_val_test():
         if not os.path.isdir(label_path):
             continue
 
-        # 跳过已经划分过的目录
         if os.path.exists(os.path.join(label_path, "train")):
             continue
 
@@ -310,7 +211,6 @@ def print_dataset_stats():
         if not os.path.isdir(label_path):
             continue
 
-        # 检查是否有子目录划分
         has_splits = any(os.path.exists(os.path.join(label_path, s))
                         for s in ["train", "val", "test"])
 
@@ -337,48 +237,35 @@ def print_dataset_stats():
     print(f"  总计: {total} 张字符图片")
 
 
-# ============================================================
-#  主程序
-# ============================================================
-
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="车牌数据集预处理")
-    parser.add_argument("--dataset", type=str, default="cblprd",
-                        choices=["ccpd", "cblprd"],
-                        help="数据集类型: ccpd 或 cblprd (默认: cblprd)")
+    parser = argparse.ArgumentParser(description="CBLPRD-330k 车牌数据集预处理")
     parser.add_argument("--subset", type=str, default="train",
-                        help="子集名称 (CCPD: ccpd_base等; CBLPRD: train/val/test)")
+                        choices=["train", "val"],
+                        help="子集名称 (默认: train)")
     parser.add_argument("--max_images", type=int, default=None,
                         help="最大处理图片数 (默认: 全部)")
     parser.add_argument("--all", action="store_true",
-                        help="处理所有子集 (仅CBLPRD)")
+                        help="处理 train 和 val 两个子集")
     parser.add_argument("--split", action="store_true",
-                        help="划分训练/验证/测试集 (仅对未划分的数据)")
+                        help="划分训练/验证/测试集")
     parser.add_argument("--stats", action="store_true",
                         help="打印数据集统计")
     args = parser.parse_args()
 
-    if args.dataset == "ccpd":
-        process_ccpd_dataset(subset=args.subset, max_images=args.max_images)
-    else:  # cblprd
-        if args.all:
-            process_cblprd_all(max_images_per_split=args.max_images)
-        else:
-            process_cblprd_dataset(subset=args.subset, max_images=args.max_images)
+    if args.stats:
+        print_dataset_stats()
+    elif args.all:
+        process_all(max_images_per_split=args.max_images)
+    else:
+        process_dataset(subset=args.subset, max_images=args.max_images)
 
     if args.split:
         split_train_val_test()
 
-    if args.stats:
-        print_dataset_stats()
-
     print("\n使用方式:")
-    print("  CCPD:")
-    print("    python scripts/prepare_data.py --dataset ccpd --subset ccpd_base --max_images 5000")
-    print("  CBLPRD-330k (推荐):")
-    print("    python scripts/prepare_data.py --dataset cblprd --all")
-    print("    python scripts/prepare_data.py --dataset cblprd --subset train --max_images 10000")
-    print("  查看统计:")
-    print("    python scripts/prepare_data.py --stats")
+    print("  处理训练集:  python scripts/prepare_data.py --subset train")
+    print("  处理验证集:  python scripts/prepare_data.py --subset val")
+    print("  处理全部:    python scripts/prepare_data.py --all")
+    print("  查看统计:    python scripts/prepare_data.py --stats")

@@ -5,11 +5,10 @@ import os
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
-# CCPD数据集路径
-CCPD_DIR = os.path.join(DATA_DIR, "CCPD2019")
-
 # CBLPRD-330k 数据集路径
-CBLPRD_DIR = os.path.join(DATA_DIR, "CBLPRD330k")
+CBLPRD_DIR = os.path.join(DATA_DIR, "CBLPRD-330k")
+CBLPRD_TRAIN_TXT = os.path.join(DATA_DIR, "train.txt")
+CBLPRD_VAL_TXT = os.path.join(DATA_DIR, "val.txt")
 
 # 字符图片目录（分割后的数据集）
 CHAR_DIR = os.path.join(DATA_DIR, "characters")
@@ -19,8 +18,6 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
 # === 图像配置 ===
 CHAR_IMG_SIZE = (20, 20)   # 字符图片统一尺寸
-PLATE_HEIGHT = 140         # 车牌裁切高度
-PLATE_WIDTH = 440          # 车牌裁切宽度
 
 # === 字符映射 ===
 # 省份简称（31个）
@@ -40,9 +37,12 @@ LETTERS = [
 # 数字（10个）
 DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
-# 完整字符表：省份(31) + 字母(24) + 数字(10) = 65类
-CHAR_LIST = PROVINCES + LETTERS + DIGITS
-NUM_CLASSES = len(CHAR_LIST)   # 65
+# 特殊字符（教练车、挂车等）
+SPECIAL_CHARS = ["学", "挂", "警", "港", "澳", "使", "领"]
+
+# 完整字符表：省份(31) + 字母(24) + 数字(10) + 特殊(7) = 72类
+CHAR_LIST = PROVINCES + LETTERS + DIGITS + SPECIAL_CHARS
+NUM_CLASSES = len(CHAR_LIST)   # 72
 
 # 字符 -> 索引
 CHAR_TO_IDX = {c: i for i, c in enumerate(CHAR_LIST)}

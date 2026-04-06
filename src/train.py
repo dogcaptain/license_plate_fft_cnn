@@ -15,21 +15,36 @@ import os
 import sys
 import json
 import argparse
+from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
 
+# 尝试导入可选的日志库
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    HAS_TENSORBOARD = True
+except ImportError:
+    HAS_TENSORBOARD = False
+
+try:
+    import swanlab
+    HAS_SWANLAB = True
+except ImportError:
+    HAS_SWANLAB = False
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import CHAR_DIR, RESULTS_DIR, BATCH_SIZE, EPOCHS, LEARNING_RATE, NUM_CLASSES
+from config import CHAR_DIR, RESULTS_DIR, BATCH_SIZE, EPOCHS, LEARNING_RATE, NUM_CLASSES, NUM_WORKERS, PIN_MEMORY, USE_AMP
 from src.dataset import CharDataset
 from src.model import build_model
 
 
-def train_one_epoch(model, dataloader, criterion, optimizer, device):
-    """训练一个epoch"""
+def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None):
+    """训练一个epoch，支持混合精度训练"""
     model.train()
     running_loss = 0.0
     correct = 0
@@ -41,10 +56,20 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         labels = labels.to(device)
 
         optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+
+        # 混合精度训练
+        if scaler is not None:
+            with autocast():
+                outputs = model(images)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
 
         running_loss += loss.item() * images.size(0)
         _, predicted = outputs.max(1)
@@ -83,7 +108,60 @@ def validate(model, dataloader, criterion, device):
     return epoch_loss, epoch_acc
 
 
-def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
+class Logger:
+    """统一的日志记录器，支持TensorBoard和SwanLab"""
+
+    def __init__(self, log_tool="tensorboard", log_dir=None, project_name=None, experiment_name=None):
+        """
+        初始化日志记录器
+
+        Args:
+            log_tool: 'tensorboard' 或 'swanlab'
+            log_dir: TensorBoard日志目录
+            project_name: SwanLab项目名称
+            experiment_name: SwanLab实验名称
+        """
+        self.log_tool = log_tool
+        self.writer = None
+        self.swanlab_run = None
+
+        if log_tool == "tensorboard":
+            if not HAS_TENSORBOARD:
+                raise ImportError("TensorBoard未安装，请运行: pip install tensorboard")
+            self.writer = SummaryWriter(log_dir=log_dir)
+            print(f"  使用 TensorBoard 记录日志: {log_dir}")
+
+        elif log_tool == "swanlab":
+            if not HAS_SWANLAB:
+                raise ImportError("SwanLab未安装，请运行: pip install swanlab")
+            self.swanlab_run = swanlab.init(
+                project=project_name or "license-plate-fft-cnn",
+                experiment_name=experiment_name or f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                description="车牌字符识别CNN训练",
+            )
+            print(f"  使用 SwanLab 记录日志: {self.swanlab_run.run_id}")
+
+        else:
+            raise ValueError(f"未知的日志工具: {log_tool}，可选: 'tensorboard', 'swanlab'")
+
+    def add_scalar(self, tag, value, step):
+        """记录标量值"""
+        if self.log_tool == "tensorboard":
+            self.writer.add_scalar(tag, value, step)
+        elif self.log_tool == "swanlab":
+            # SwanLab使用不同的tag格式，转换为字典
+            self.swanlab_run.log({tag: value}, step=step)
+
+    def close(self):
+        """关闭日志记录器"""
+        if self.log_tool == "tensorboard":
+            self.writer.close()
+        elif self.log_tool == "swanlab":
+            self.swanlab_run.finish()
+
+
+def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
+          num_workers=None, pin_memory=None, use_amp=None, log_tool="tensorboard"):
     """
     训练模型
 
@@ -93,6 +171,10 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         batch_size: 批大小
         lr: 学习率
         device: 训练设备
+        num_workers: DataLoader工作进程数
+        pin_memory: 是否使用pin_memory加速GPU传输
+        use_amp: 是否使用自动混合精度训练
+        log_tool: 日志工具 'tensorboard' 或 'swanlab'
     """
     # 使用默认配置
     if epochs is None:
@@ -103,10 +185,20 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         lr = LEARNING_RATE
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if num_workers is None:
+        num_workers = NUM_WORKERS
+    if pin_memory is None:
+        pin_memory = PIN_MEMORY
+    if use_amp is None:
+        use_amp = USE_AMP
 
     # 确定输入通道数
     in_channels = 1 if mode == "spatial" else 2
     model_name = "baseline" if mode == "spatial" else "fft"
+
+    # 混合精度训练设置
+    use_amp = use_amp and torch.cuda.is_available()
+    scaler = GradScaler() if use_amp else None
 
     print("=" * 60)
     print(f"开始训练 [{mode.upper()}] 模式")
@@ -115,14 +207,37 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     print(f"  训练轮数: {epochs}")
     print(f"  学习率: {lr}")
     print(f"  设备: {device}")
+    print(f"  混合精度训练: {use_amp}")
+    print(f"  DataLoader workers: {num_workers}")
+    print(f"  日志工具: {log_tool}")
     print("=" * 60)
 
-    # 创建数据集
-    train_dataset = CharDataset(split="train", mode=mode, augmentation=True)
-    val_dataset = CharDataset(split="val", mode=mode, augmentation=False)
+    # 创建日志记录器
+    log_dir = os.path.join(RESULTS_DIR, "logs", f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    logger = Logger(
+        log_tool=log_tool,
+        log_dir=log_dir,
+        project_name="license-plate-fft-cnn",
+        experiment_name=f"{model_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    )
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    # 创建数据集（FFT模式预计算缓存）
+    train_dataset = CharDataset(split="train", mode=mode, augmentation=True,
+                                 cache_fft=(mode=="fft"), num_workers=num_workers)
+    val_dataset = CharDataset(split="val", mode=mode, augmentation=False,
+                               cache_fft=(mode=="fft"), num_workers=num_workers)
+
+    # DataLoader配置：多进程 + pin_memory加速
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True,
+        num_workers=num_workers, pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0)
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=batch_size, shuffle=False,
+        num_workers=num_workers, pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0)
+    )
 
     print(f"训练集样本数: {len(train_dataset)}")
     print(f"验证集样本数: {len(val_dataset)}")
@@ -156,13 +271,14 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     # 最佳模型跟踪
     best_val_acc = 0.0
     best_epoch = 0
+    best_model_path = os.path.join(RESULTS_DIR, f"best_model_{model_name}.pth")
 
     # 开始训练
     for epoch in range(1, epochs + 1):
         print(f"\nEpoch {epoch}/{epochs}")
 
         # 训练
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device, scaler)
 
         # 验证
         val_loss, val_acc = validate(model, val_loader, criterion, device)
@@ -184,6 +300,13 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
         print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
         print(f"  Val Loss:   {val_loss:.4f}, Val Acc:   {val_acc:.4f}")
         print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+
+        # 写入日志
+        logger.add_scalar("Loss/train", train_loss, epoch)
+        logger.add_scalar("Loss/val", val_loss, epoch)
+        logger.add_scalar("Accuracy/train", train_acc, epoch)
+        logger.add_scalar("Accuracy/val", val_acc, epoch)
+        logger.add_scalar("LearningRate", scheduler.get_last_lr()[0], epoch)
 
         # 保存最佳模型
         if val_acc > best_val_acc:
@@ -211,11 +334,18 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     with open(log_path, "w", encoding="utf-8") as f:
         json.dump(train_log, f, indent=2, ensure_ascii=False)
 
+    # 关闭日志记录器
+    logger.close()
+
     print("\n" + "=" * 60)
     print(f"训练完成！")
     print(f"  最佳验证准确率: {best_val_acc:.4f} (Epoch {best_epoch})")
     print(f"  模型保存位置: {best_model_path}")
-    print(f"  日志保存位置: {log_path}")
+    if log_tool == "tensorboard":
+        print(f"  TensorBoard日志: {log_dir}")
+        print(f"  查看命令: tensorboard --logdir={log_dir}")
+    elif log_tool == "swanlab":
+        print(f"  SwanLab实验已完成")
     print("=" * 60)
 
     return model, train_log
@@ -234,6 +364,15 @@ def main():
     parser.add_argument("--batch_size", type=int, default=None, help="批次大小")
     parser.add_argument("--lr", type=float, default=None, help="学习率")
     parser.add_argument("--device", type=str, default=None, help="训练设备 (cuda/cpu)")
+    parser.add_argument("--num_workers", type=int, default=None, help="DataLoader工作进程数")
+    parser.add_argument("--no_amp", action="store_true", help="禁用混合精度训练")
+    parser.add_argument(
+        "--log_tool",
+        type=str,
+        default="tensorboard",
+        choices=["tensorboard", "swanlab"],
+        help="日志工具: tensorboard 或 swanlab",
+    )
 
     args = parser.parse_args()
 
@@ -253,6 +392,9 @@ def main():
         batch_size=args.batch_size,
         lr=args.lr,
         device=device,
+        num_workers=args.num_workers,
+        use_amp=not args.no_amp,
+        log_tool=args.log_tool,
     )
 
 

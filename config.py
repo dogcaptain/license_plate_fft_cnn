@@ -49,9 +49,12 @@ CHAR_TO_IDX = {c: i for i, c in enumerate(CHAR_LIST)}
 IDX_TO_CHAR = {i: c for i, c in enumerate(CHAR_LIST)}
 
 # === 训练配置 ===
-BATCH_SIZE = 64
+BATCH_SIZE = 256          # 增大batch size以充分利用GPU
 EPOCHS = 30
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.001     # 增大学习率配合更大的batch
+NUM_WORKERS = 4           # DataLoader默认工作进程数
+PIN_MEMORY = True         # 是否使用pin_memory加速GPU传输
+USE_AMP = True            # 默认启用混合精度训练
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1

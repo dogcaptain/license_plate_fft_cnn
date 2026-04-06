@@ -4,8 +4,17 @@ import os
 # === 路径配置 ===
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-CCPD_DIR = os.path.join(DATA_DIR, "CCPD2019")          # CCPD原始数据集目录
-CHAR_DIR = os.path.join(DATA_DIR, "characters")          # 分割后的字符图片目录
+
+# CCPD数据集路径
+CCPD_DIR = os.path.join(DATA_DIR, "CCPD2019")
+
+# CBLPRD-330k 数据集路径
+CBLPRD_DIR = os.path.join(DATA_DIR, "CBLPRD330k")
+
+# 字符图片目录（分割后的数据集）
+CHAR_DIR = os.path.join(DATA_DIR, "characters")
+
+# 输出目录
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
 # === 图像配置 ===
@@ -14,16 +23,21 @@ PLATE_HEIGHT = 140         # 车牌裁切高度
 PLATE_WIDTH = 440          # 车牌裁切宽度
 
 # === 字符映射 ===
+# 省份简称（31个）
 PROVINCES = [
     "皖", "沪", "津", "渝", "冀", "晋", "蒙", "辽", "吉", "黑",
     "苏", "浙", "京", "闽", "赣", "鲁", "豫", "鄂", "湘", "粤",
     "桂", "琼", "川", "贵", "云", "藏", "陕", "甘", "青", "宁", "新"
 ]
+
+# 字母（24个，不含I、O）
 LETTERS = [
     "A", "B", "C", "D", "E", "F", "G", "H", "J", "K",
     "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V",
     "W", "X", "Y", "Z"
 ]
+
+# 数字（10个）
 DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
 
 # 完整字符表：省份(31) + 字母(24) + 数字(10) = 65类

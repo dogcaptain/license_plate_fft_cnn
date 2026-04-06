@@ -51,7 +51,7 @@ IDX_TO_CHAR = {i: c for i, c in enumerate(CHAR_LIST)}
 # === 训练配置 ===
 BATCH_SIZE = 64
 EPOCHS = 30
-LEARNING_RATE = 0.001
+LEARNING_RATE = 0.00001
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1

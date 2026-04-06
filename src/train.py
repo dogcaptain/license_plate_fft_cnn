@@ -121,8 +121,22 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
     train_dataset = CharDataset(split="train", mode=mode, augmentation=True)
     val_dataset = CharDataset(split="val", mode=mode, augmentation=False)
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    # DataLoader设置：Windows下num_workers=0避免多进程问题
+    # pin_memory=True加速GPU数据传输（当使用CUDA时）
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=True if device.type == "cuda" else False
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True if device.type == "cuda" else False
+    )
 
     print(f"训练集样本数: {len(train_dataset)}")
     print(f"验证集样本数: {len(val_dataset)}")
@@ -222,6 +236,14 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None):
 
 
 def main():
+    # 检查CUDA是否可用
+    if torch.cuda.is_available():
+        print(f"CUDA可用: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA版本: {torch.version.cuda}")
+        print(f"PyTorch版本: {torch.__version__}")
+    else:
+        print("警告: CUDA不可用，将使用CPU训练")
+
     parser = argparse.ArgumentParser(description="车牌字符识别CNN训练")
     parser.add_argument(
         "--mode",

@@ -131,6 +131,10 @@ class CharDataset(Dataset):
 
         label = torch.tensor(label, dtype=torch.long)
 
+        # 确保数据在正确的内存布局（C contiguous）以便GPU传输
+        if not image.is_contiguous():
+            image = image.contiguous()
+
         return image, label
 
     def _augment(self, img):

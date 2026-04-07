@@ -1,24 +1,27 @@
 """
 CNN模型定义
-功能：车牌字符识别CNN模型，支持空间域和频域两种输入模式
+功能：增强版车牌字符识别CNN模型，支持空间域和频域两种输入模式
 
-网络结构：
-  Conv(in_channels, 32, 3) + ReLU + MaxPool(2)
-  Conv(32, 64, 3) + ReLU + MaxPool(2)
-  Conv(64, 128, 3) + ReLU
-  Flatten
-  FC(128*4*4, 256) + ReLU + Dropout(0.5)
+网络结构（增强版）：
+  Conv(in_channels, 64, 3) + BN + ReLU + MaxPool(2)
+  Conv(64, 128, 3) + BN + ReLU + MaxPool(2)
+  Conv(128, 256, 3) + BN + ReLU
+  Conv(256, 512, 3) + BN + ReLU + MaxPool(2)
+  GlobalAvgPool
+  FC(512, 512) + BN + ReLU + Dropout(0.5)
+  FC(512, 256) + BN + ReLU + Dropout(0.3)
   FC(256, NUM_CLASSES)
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from config import NUM_CLASSES, CHAR_IMG_SIZE
 
 
 class CharCNN(nn.Module):
     """
-    车牌字符识别CNN模型
+    增强版车牌字符识别CNN模型
 
     Args:
         in_channels: 输入通道数
@@ -26,44 +29,72 @@ class CharCNN(nn.Module):
             - 2: fft模式（灰度图 + FFT高通滤波特征图）
     """
 
-    def __init__(self, in_channels=1):
+    def __init__(self, in_channels=1, dropout=0.5):
         super(CharCNN, self).__init__()
         self.in_channels = in_channels
 
-        # 特征提取器
+        # 特征提取器 - 更深的网络 + BatchNorm
         self.features = nn.Sequential(
-            # Conv1 + ReLU + MaxPool
-            # 输入: (in_channels, 20, 20) → 输出: (32, 9, 9)
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            # Block 1: 20x20 -> 10x10
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2),  # 20x20 → 10x10
+            nn.MaxPool2d(kernel_size=2),
 
-            # Conv2 + ReLU + MaxPool
-            # 输入: (32, 10, 10) → 输出: (64, 4, 4)
-            nn.Conv2d(32, 64, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2),  # 10x10 → 5x5
-
-            # Conv3 + ReLU
-            # 输入: (64, 5, 5) → 输出: (128, 5, 5)
+            # Block 2: 10x10 -> 5x5
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2),
+
+            # Block 3: 5x5 -> 5x5
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            # Block 4: 5x5 -> 2x2
+            nn.Conv2d(256, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2),
         )
 
-        # 自适应池化，兼容不同输入尺寸
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+        # 全局平均池化
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # 全连接分类器
+        # 全连接分类器 - 更深的网络 + BatchNorm
         self.classifier = nn.Sequential(
-            # Flatten: 128 * 4 * 4 = 2048
             nn.Flatten(),
             # FC1
-            nn.Linear(128 * 4 * 4, 256),
+            nn.Linear(512, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            # FC2 (输出层)
+            nn.Dropout(dropout),
+            # FC2
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout * 0.6),  # 递减dropout
+            # FC3 (输出层)
             nn.Linear(256, NUM_CLASSES),
         )
+
+        # 初始化权重
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """He初始化"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         """
@@ -76,7 +107,7 @@ class CharCNN(nn.Module):
             logits: 输出 logits，shape=(batch_size, NUM_CLASSES)
         """
         x = self.features(x)
-        x = self.adaptive_pool(x)
+        x = self.global_pool(x)
         x = self.classifier(x)
         return x
 
@@ -92,12 +123,13 @@ class CharCNN(nn.Module):
         }
 
 
-def build_model(mode="spatial"):
+def build_model(mode="spatial", dropout=0.5):
     """
     工厂函数：根据模式构建模型
 
     Args:
         mode: 'spatial' 或 'fft'
+        dropout: Dropout比率
 
     Returns:
         model: CharCNN 实例
@@ -109,7 +141,7 @@ def build_model(mode="spatial"):
     else:
         raise ValueError(f"未知的模式: {mode}，可选: 'spatial', 'fft'")
 
-    return CharCNN(in_channels=in_channels)
+    return CharCNN(in_channels=in_channels, dropout=dropout)
 
 
 if __name__ == "__main__":

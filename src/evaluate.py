@@ -20,7 +20,46 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import RESULTS_DIR, CHAR_LIST, BATCH_SIZE
 from src.dataset import CharDataset
 from src.model import build_model
+from sklearn.metrics import classification_report
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei']  # 黑体
+matplotlib.rcParams['axes.unicode_minus'] = False
 
+def per_class_accuracy(y_true, y_pred, num_classes):
+    acc = []
+    for i in range(num_classes):
+        idx = (y_true == i)
+        if idx.sum() == 0:
+            acc.append(0)
+        else:
+            acc.append((y_pred[idx] == i).mean())
+    return acc
+
+def top_k_accuracy(model, dataloader, device, k=3):
+    model.eval()
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for images, labels in dataloader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+
+            _, topk = outputs.topk(k, dim=1)
+            correct += (topk == labels.unsqueeze(1)).sum().item()
+            total += labels.size(0)
+
+    return correct / total
+
+def find_confusion_pairs(cm, top_n=10):
+    pairs = []
+    for i in range(len(cm)):
+        for j in range(len(cm)):
+            if i != j and cm[i][j] > 0:
+                pairs.append((i, j, cm[i][j]))
+
+    pairs.sort(key=lambda x: x[2], reverse=True)
+    return pairs[:top_n]
 
 def plot_confusion_matrix(cm, save_path, labels):
     """
@@ -141,7 +180,7 @@ def main():
     print(f"{'=' * 60}")
 
     # 计算混淆矩阵
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred, normalize='true')
 
     # 绘制混淆矩阵
     model_name = "baseline" if args.mode == "spatial" else "fft"
@@ -149,9 +188,36 @@ def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     plot_confusion_matrix(cm, cm_path, labels=CHAR_LIST)
 
+    top3 = top_k_accuracy(model, test_loader, device, k=3)
+    top5 = top_k_accuracy(model, test_loader, device, k=5)
+
+    print(f"Top-3 Acc: {top3:.4f}")
+    print(f"Top-5 Acc: {top5:.4f}")
+
+    acc_list = per_class_accuracy(y_true, y_pred, len(CHAR_LIST))
+
+    worst = sorted(enumerate(acc_list), key=lambda x: x[1])[:10]
+
+    for i, acc in worst:
+        print(f"{CHAR_LIST[i]}: {acc:.3f}")
+
+    pairs = find_confusion_pairs(cm)
+
+    for i, j, cnt in pairs:
+        print(f"{CHAR_LIST[i]} → {CHAR_LIST[j]}: {cnt}")
+
     # 分类报告
     print("\n分类报告:")
-    print(classification_report(y_true, y_pred, target_names=CHAR_LIST, zero_division=0))
+    #print(classification_report(y_true, y_pred, target_names=CHAR_LIST, zero_division=0))
+    labels = list(range(len(CHAR_LIST)))
+
+    print(classification_report(
+        y_true,
+        y_pred,
+        labels=labels,
+        target_names=CHAR_LIST,
+        zero_division=0
+    ))
 
     # 保存分类报告到文件
     report_path = os.path.join(RESULTS_DIR, f"classification_report_{model_name}.txt")
@@ -161,7 +227,7 @@ def main():
         f.write(f"测试集样本数: {len(test_dataset)}\n")
         f.write(f"准确率: {accuracy:.4f}\n\n")
         f.write("分类报告:\n")
-        f.write(classification_report(y_true, y_pred, target_names=CHAR_LIST, zero_division=0))
+        #f.write(classification_report(y_true, y_pred, target_names=CHAR_LIST, zero_division=0))
     print(f"\n分类报告已保存: {report_path}")
 
 

@@ -9,14 +9,5 @@ scikit-learn>=1.3.0
 Pillow>=10.0.0
 tqdm>=4.65.0
 seaborn>=0.12.0
-tensorboard>=2.15.0
-
-# 注意：RTX 5070显卡需要以下环境
-# - CUDA 12.6 或更高版本
-# - PyTorch 2.5.0 或更高版本（支持CUDA 12.6）
-#
-# 安装命令：
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-#
-# 验证CUDA可用：
-# python -c "import torch; print(f'CUDA可用: {torch.cuda.is_available()}'); print(f'设备: {torch.cuda.get_device_name(0)}')"
+tensorboard>=2.13.0
+swanlab>=0.3.0

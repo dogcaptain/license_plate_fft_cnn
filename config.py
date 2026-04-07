@@ -49,9 +49,15 @@ CHAR_TO_IDX = {c: i for i, c in enumerate(CHAR_LIST)}
 IDX_TO_CHAR = {i: c for i, c in enumerate(CHAR_LIST)}
 
 # === 训练配置 ===
-BATCH_SIZE = 64
-EPOCHS = 30
-LEARNING_RATE = 0.00001
+BATCH_SIZE = 256          # 增大batch size以充分利用GPU
+EPOCHS = 100              # 增加训练轮数
+LEARNING_RATE = 0.01      # OneCycleLR需要较大的初始学习率
+WEIGHT_DECAY = 1e-4       # 权重衰减
+DROPOUT = 0.5             # Dropout比率
+LABEL_SMOOTHING = 0.1     # 标签平滑
+NUM_WORKERS = 0 if os.name == 'nt' else 4  # DataLoader默认工作进程数（Windows用0）
+PIN_MEMORY = True         # 是否使用pin_memory加速GPU传输
+USE_AMP = True            # 默认启用混合精度训练
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1

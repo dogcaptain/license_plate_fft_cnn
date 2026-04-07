@@ -102,13 +102,16 @@ class CharDataset(Dataset):
         """
         img_path, label = self.samples[idx]
 
-        # 读取图像
-        img = cv2.imread(img_path)
-        if img is None:
-            # 如果读取失败，返回一个全零的图像
+        # 读取图像（使用imdecode支持Unicode路径）
+        try:
+            img_bytes = np.fromfile(img_path, dtype=np.uint8)
+            img = cv2.imdecode(img_bytes, cv2.IMREAD_COLOR)
+            if img is None:
+                img = np.zeros((*self.img_size, 3), dtype=np.uint8)
+            else:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        except Exception:
             img = np.zeros((*self.img_size, 3), dtype=np.uint8)
-        else:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # 转为灰度图
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
@@ -159,10 +162,12 @@ class CharDataset(Dataset):
         def compute_fft(args):
             idx, img_path = args
             try:
-                img = cv2.imread(img_path)
+                # 使用imdecode支持Unicode路径
+                img_bytes = np.fromfile(img_path, dtype=np.uint8)
+                img = cv2.imdecode(img_bytes, cv2.IMREAD_GRAYSCALE)
                 if img is None:
                     return idx, None
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                gray = img
                 gray = cv2.resize(gray, (self.img_size[1], self.img_size[0]),
                                   interpolation=cv2.INTER_AREA)
                 # 归一化

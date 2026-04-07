@@ -139,7 +139,11 @@ def process_dataset(subset="train", max_images=None):
                 base_name = os.path.splitext(os.path.basename(img_path))[0]
                 save_name = f"{base_name}_{pos}.jpg"
                 save_path = os.path.join(save_dir, save_name)
-                cv2.imwrite(save_path, char_img)
+                # 使用Python文件操作保存，避免OpenCV中文路径问题
+                is_success, buffer = cv2.imencode(".jpg", char_img)
+                if is_success:
+                    with open(save_path, 'wb') as f:
+                        f.write(buffer)
 
             success_count += 1
         except Exception as e:

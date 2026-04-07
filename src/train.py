@@ -21,7 +21,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+try:
+    from torch.cuda.amp import autocast, GradScaler
+    HAS_CUDA = True
+except ImportError:
+    HAS_CUDA = False
+    autocast = None
+    GradScaler = None
 from tqdm import tqdm
 
 # 尝试导入可选的日志库
@@ -58,7 +64,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None
         optimizer.zero_grad()
 
         # 混合精度训练
-        if scaler is not None:
+        if scaler is not None and HAS_CUDA:
             with autocast():
                 outputs = model(images)
                 loss = criterion(outputs, labels)
@@ -139,7 +145,7 @@ class Logger:
                 experiment_name=experiment_name or f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 description="车牌字符识别CNN训练",
             )
-            print(f"  使用 SwanLab 记录日志: {self.swanlab_run.run_id}")
+            print(f"  使用 SwanLab 记录日志")
 
         else:
             raise ValueError(f"未知的日志工具: {log_tool}，可选: 'tensorboard', 'swanlab'")
@@ -161,7 +167,9 @@ class Logger:
 
 
 def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
-          num_workers=None, pin_memory=None, use_amp=None, log_tool="tensorboard"):
+          num_workers=None, pin_memory=None, use_amp=None, log_tool="tensorboard",
+          val_interval=1, weight_decay=1e-4, dropout=0.5, label_smoothing=0.1,
+          use_multi_gpu=False, gpu_ids=None):
     """
     训练模型
 
@@ -175,6 +183,12 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
         pin_memory: 是否使用pin_memory加速GPU传输
         use_amp: 是否使用自动混合精度训练
         log_tool: 日志工具 'tensorboard' 或 'swanlab'
+        val_interval: 每隔多少个epoch验证一次 (默认1，即每轮都验证)
+        weight_decay: 权重衰减
+        dropout: Dropout比率
+        label_smoothing: 标签平滑系数
+        use_multi_gpu: 是否使用多GPU训练
+        gpu_ids: 使用的GPU ID列表，如 [0, 1]
     """
     # 使用默认配置
     if epochs is None:
@@ -192,13 +206,32 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
     if use_amp is None:
         use_amp = USE_AMP
 
+    # 多GPU设置
+    num_gpus = torch.cuda.device_count()
+    if use_multi_gpu and num_gpus > 1:
+        if gpu_ids is None:
+            gpu_ids = list(range(num_gpus))
+        device = torch.device(f"cuda:{gpu_ids[0]}")
+        print(f"  使用多GPU训练: {gpu_ids} ({num_gpus} 张显卡)")
+    elif use_multi_gpu and num_gpus <= 1:
+        print(f"  [警告] 请求多GPU训练但只有 {num_gpus} 张显卡可用，使用单卡")
+        use_multi_gpu = False
+
     # 确定输入通道数
     in_channels = 1 if mode == "spatial" else 2
     model_name = "baseline" if mode == "spatial" else "fft"
 
     # 混合精度训练设置
-    use_amp = use_amp and torch.cuda.is_available()
-    scaler = GradScaler() if use_amp else None
+    use_amp = use_amp and HAS_CUDA and torch.cuda.is_available()
+    if use_amp:
+        try:
+            # PyTorch 2.0+ 新API
+            scaler = torch.amp.GradScaler('cuda')
+        except (AttributeError, TypeError):
+            # 旧API兼容
+            scaler = GradScaler()
+    else:
+        scaler = None
 
     print("=" * 60)
     print(f"开始训练 [{mode.upper()}] 模式")
@@ -206,10 +239,15 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
     print(f"  批次大小: {batch_size}")
     print(f"  训练轮数: {epochs}")
     print(f"  学习率: {lr}")
+    print(f"  权重衰减: {weight_decay}")
+    print(f"  Dropout: {dropout}")
+    print(f"  标签平滑: {label_smoothing}")
     print(f"  设备: {device}")
+    print(f"  多GPU训练: {use_multi_gpu}")
     print(f"  混合精度训练: {use_amp}")
     print(f"  DataLoader workers: {num_workers}")
     print(f"  日志工具: {log_tool}")
+    print(f"  验证间隔: 每 {val_interval} 个 epoch")
     print("=" * 60)
 
     # 创建日志记录器
@@ -227,32 +265,52 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
     val_dataset = CharDataset(split="val", mode=mode, augmentation=False,
                                cache_fft=(mode=="fft"), num_workers=num_workers)
 
-    # DataLoader配置：多进程 + pin_memory加速
+    # DataLoader配置：Windows下多进程可能有问题，使用单进程更稳定
+    # 如果num_workers>0在Windows上出问题，设为0使用主进程加载数据
+    if os.name == 'nt' and num_workers > 0:  # Windows
+        print("  [警告] Windows系统检测到，建议使用 num_workers=0 避免多进程问题")
+        print("  如需多进程加速，请在Linux/Mac上运行")
+        # 保持用户设置，但如果出问题可以手动设为0
+
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=pin_memory,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0 and os.name != 'nt')
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=pin_memory,
-        persistent_workers=(num_workers > 0)
+        persistent_workers=(num_workers > 0 and os.name != 'nt')
     )
 
     print(f"训练集样本数: {len(train_dataset)}")
     print(f"验证集样本数: {len(val_dataset)}")
 
-    # 创建模型
-    model = build_model(mode=mode).to(device)
+    # 创建模型（传入dropout参数）
+    model = build_model(mode=mode, dropout=dropout).to(device)
     info = model.get_model_info()
     print(f"模型参数量: {info['total_params']:,}")
 
-    # 损失函数和优化器
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    # 多GPU包装
+    if use_multi_gpu and num_gpus > 1:
+        model = nn.DataParallel(model, device_ids=gpu_ids)
+        print(f"  DataParallel包装完成，使用GPU: {gpu_ids}")
 
-    # 学习率调度器：余弦退火
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    # 损失函数（带标签平滑）和优化器（带权重衰减）
+    criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+
+    # 学习率调度器：OneCycleLR（更快收敛）
+    scheduler = optim.lr_scheduler.OneCycleLR(
+        optimizer,
+        max_lr=lr,
+        epochs=epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.3,  # 30%时间用于warmup
+        anneal_strategy='cos',
+        div_factor=25,  # 初始lr = max_lr/25
+        final_div_factor=10000,  # 最终lr = max_lr/10000
+    )
 
     # 训练日志
     train_log = {
@@ -280,11 +338,22 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
         # 训练
         train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device, scaler)
 
-        # 验证
-        val_loss, val_acc = validate(model, val_loader, criterion, device)
+        # 验证（每隔val_interval个epoch验证一次，最后一轮必定验证）
+        if epoch % val_interval == 0 or epoch == epochs:
+            val_loss, val_acc = validate(model, val_loader, criterion, device)
+            print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
+            print(f"  Val Loss:   {val_loss:.4f}, Val Acc:   {val_acc:.4f}")
+        else:
+            # 不验证时，使用上一次的验证结果（或0）
+            val_loss = 0.0
+            val_acc = 0.0
+            print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}  (跳过验证)")
 
-        # 更新学习率
+        # 更新学习率（OneCycleLR每个step更新）
         scheduler.step()
+
+        # 记录当前学习率
+        current_lr = optimizer.param_groups[0]['lr']
 
         # 记录日志
         epoch_log = {
@@ -293,30 +362,31 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
             "train_acc": float(train_acc),
             "val_loss": float(val_loss),
             "val_acc": float(val_acc),
-            "lr": float(scheduler.get_last_lr()[0]),
+            "lr": float(current_lr),
         }
         train_log["history"].append(epoch_log)
 
-        print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
-        print(f"  Val Loss:   {val_loss:.4f}, Val Acc:   {val_acc:.4f}")
-        print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"  LR: {current_lr:.6f}")
 
         # 写入日志
         logger.add_scalar("Loss/train", train_loss, epoch)
-        logger.add_scalar("Loss/val", val_loss, epoch)
         logger.add_scalar("Accuracy/train", train_acc, epoch)
-        logger.add_scalar("Accuracy/val", val_acc, epoch)
-        logger.add_scalar("LearningRate", scheduler.get_last_lr()[0], epoch)
+        logger.add_scalar("LearningRate", current_lr, epoch)
+        if epoch % val_interval == 0 or epoch == epochs:
+            logger.add_scalar("Loss/val", val_loss, epoch)
+            logger.add_scalar("Accuracy/val", val_acc, epoch)
 
-        # 保存最佳模型
-        if val_acc > best_val_acc:
+        # 保存最佳模型（仅在验证时）
+        if (epoch % val_interval == 0 or epoch == epochs) and val_acc > best_val_acc:
             best_val_acc = val_acc
             best_epoch = epoch
             best_model_path = os.path.join(RESULTS_DIR, f"best_model_{model_name}.pth")
+            # 多GPU情况下保存原始模型
+            model_to_save = model.module if use_multi_gpu else model
             torch.save(
                 {
                     "epoch": epoch,
-                    "model_state_dict": model.state_dict(),
+                    "model_state_dict": model_to_save.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_acc": val_acc,
                     "val_loss": val_loss,
@@ -373,8 +443,18 @@ def main():
         choices=["tensorboard", "swanlab"],
         help="日志工具: tensorboard 或 swanlab",
     )
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="权重衰减 (默认1e-4)")
+    parser.add_argument("--dropout", type=float, default=0.5, help="Dropout比率 (默认0.5)")
+    parser.add_argument("--label_smoothing", type=float, default=0.1, help="标签平滑系数 (默认0.1)")
+    parser.add_argument("--multi_gpu", action="store_true", help="使用多GPU训练")
+    parser.add_argument("--gpu_ids", type=str, default=None, help="使用的GPU ID，如 '0,1' (默认使用所有)")
 
     args = parser.parse_args()
+
+    # 解析GPU IDs
+    gpu_ids = None
+    if args.gpu_ids:
+        gpu_ids = [int(x) for x in args.gpu_ids.split(',')]
 
     # 解析设备
     if args.device:
@@ -395,6 +475,12 @@ def main():
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
         log_tool=args.log_tool,
+        val_interval=args.val_interval,
+        weight_decay=args.weight_decay,
+        dropout=args.dropout,
+        label_smoothing=args.label_smoothing,
+        use_multi_gpu=args.multi_gpu,
+        gpu_ids=gpu_ids,
     )
 
 

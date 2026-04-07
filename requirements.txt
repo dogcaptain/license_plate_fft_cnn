@@ -1,5 +1,7 @@
-torch>=2.0.0
-torchvision>=0.15.0
+# PyTorch - RTX 5070需要CUDA 12.6+和PyTorch 2.5+
+# 安装命令: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+torch>=2.5.0
+torchvision>=0.20.0
 numpy>=1.24.0
 opencv-python>=4.8.0
 matplotlib>=3.7.0

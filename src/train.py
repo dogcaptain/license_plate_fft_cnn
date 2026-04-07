@@ -58,8 +58,8 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None
 
     pbar = tqdm(dataloader, desc="Training", leave=False)
     for images, labels in pbar:
-        images = images.to(device)
-        labels = labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         optimizer.zero_grad()
 
@@ -91,18 +91,19 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, scaler=None
 
 @torch.no_grad()
 def validate(model, dataloader, criterion, device):
-    """在验证集上评估"""
+    """在验证集上评估，支持混合精度"""
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
 
     for images, labels in tqdm(dataloader, desc="Validating", leave=False):
-        images = images.to(device)
-        labels = labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
-        outputs = model(images)
-        loss = criterion(outputs, labels)
+        with torch.amp.autocast('cuda'):
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
         running_loss += loss.item() * images.size(0)
         _, predicted = outputs.max(1)
@@ -326,6 +327,12 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
         "history": [],
     }
 
+    # TensorBoard日志
+    tb_dir = os.path.join(RESULTS_DIR, "tensorboard", model_name)
+    os.makedirs(tb_dir, exist_ok=True)
+    writer = SummaryWriter(tb_dir)
+    print(f"TensorBoard日志: {tb_dir}")
+
     # 最佳模型跟踪
     best_val_acc = 0.0
     best_epoch = 0
@@ -422,6 +429,14 @@ def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
 
 
 def main():
+    # 检查CUDA是否可用
+    if torch.cuda.is_available():
+        print(f"CUDA可用: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA版本: {torch.version.cuda}")
+        print(f"PyTorch版本: {torch.__version__}")
+    else:
+        print("警告: CUDA不可用，将使用CPU训练")
+
     parser = argparse.ArgumentParser(description="车牌字符识别CNN训练")
     parser.add_argument(
         "--mode",

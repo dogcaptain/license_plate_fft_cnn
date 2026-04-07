@@ -100,6 +100,10 @@ body {
 .upload-area:hover {
   border-color: #1a73e8;
 }
+.upload-area.dragging {
+  border-color: #1a73e8;
+  background: #e8f0fe;
+}
 .upload-hint {
   color: #999;
 }
@@ -113,10 +117,50 @@ body {
   color: #bbb;
   margin-top: 4px;
 }
+.preview-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
 .preview-img {
   max-height: 160px;
   max-width: 100%;
   border-radius: 8px;
+}
+.preview-actions {
+  display: flex;
+  gap: 10px;
+}
+.action-btn {
+  padding: 6px 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s;
+}
+.action-btn:hover {
+  background: #f5f5f5;
+}
+.action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.action-btn.re-recognize {
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+.action-btn.re-recognize:hover {
+  background: #e8f0fe;
+}
+.action-btn.re-upload {
+  border-color: #d93025;
+  color: #d93025;
+}
+.action-btn.re-upload:hover {
+  background: #fce8e6;
 }
 
 .loading {
@@ -346,4 +390,115 @@ body {
 }
 .modal button:hover {
   background: #1557b0;
+}
+
+/* 图片可点击 */
+.img-box img,
+.char-card-images img {
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+.img-box img:hover,
+.char-card-images img:hover {
+  transform: scale(1.1);
+}
+
+/* 图片放大浮层 */
+.zoom-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  cursor: pointer;
+}
+.zoom-img {
+  max-width: 80vw;
+  max-height: 80vh;
+  image-rendering: pixelated;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+.zoom-close {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  background: rgba(255, 255, 255, 0.15);
+  border: none;
+  color: #fff;
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.zoom-close:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* 图片可点击 */
+.img-box img,
+.char-card-images img {
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.img-box img:hover,
+.char-card-images img:hover {
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+/* 图片放大浮层 */
+.zoom-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  cursor: pointer;
+}
+.zoom-img {
+  max-width: 80vw;
+  max-height: 80vh;
+  min-width: 240px;
+  min-height: 240px;
+  image-rendering: pixelated;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  cursor: default;
+}
+.zoom-close {
+  position: fixed;
+  top: 20px;
+  right: 24px;
+  background: rgba(255,255,255,0.15);
+  border: none;
+  color: #fff;
+  font-size: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.zoom-close:hover {
+  background: rgba(255,255,255,0.3);
 }

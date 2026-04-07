@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import axios from 'axios'
 import './App.css'
 
@@ -9,13 +9,25 @@ function App() {
   const [numChars, setNumChars] = useState(7)
   const [loading, setLoading] = useState(false)
   const [preview, setPreview] = useState(null)
+  const [currentFile, setCurrentFile] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [modelInfo, setModelInfo] = useState(null)
+  const [dragging, setDragging] = useState(false)
+  const [zoomImg, setZoomImg] = useState(null)
+  const fileInputRef = useRef(null)
 
   const handleFile = async (file) => {
     if (!file) return
     setPreview(URL.createObjectURL(file))
+    setCurrentFile(file)
+    setResult(null)
+    setError(null)
+    await recognize(file)
+  }
+
+  const recognize = async (file) => {
+    if (!file) return
     setResult(null)
     setError(null)
     setLoading(true)
@@ -38,16 +50,62 @@ function App() {
     }
   }
 
+  const handleReset = () => {
+    setPreview(null)
+    setCurrentFile(null)
+    setResult(null)
+    setError(null)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const handleReRecognize = () => {
+    if (currentFile) recognize(currentFile)
+  }
+
   const onDrop = (e) => {
     e.preventDefault()
     e.stopPropagation()
-    handleFile(e.dataTransfer.files[0])
+    setDragging(false)
+    const file = e.dataTransfer.files[0]
+    if (file && file.type.startsWith('image/')) {
+      handleFile(file)
+    }
   }
 
   const onDragOver = (e) => {
     e.preventDefault()
     e.stopPropagation()
   }
+
+  const onDragEnter = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(true)
+  }
+
+  const onDragLeave = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragging(false)
+  }
+
+  // 全局粘贴监听：Ctrl+V 粘贴图片
+  useEffect(() => {
+    const handlePaste = (e) => {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          if (file) handleFile(file)
+          return
+        }
+      }
+    }
+    window.addEventListener('paste', handlePaste)
+    return () => window.removeEventListener('paste', handlePaste)
+  }, [mode, numChars])
 
   const fetchModelInfo = async () => {
     try {
@@ -87,26 +145,38 @@ function App() {
       </div>
 
       <div
-        className="upload-area"
+        className={`upload-area${dragging ? ' drag-over' : ''}`}
         onDrop={onDrop}
         onDragOver={onDragOver}
-        onClick={() => document.getElementById('file-input').click()}
+        onDragEnter={onDragEnter}
+        onDragLeave={onDragLeave}
+        onClick={() => !preview && fileInputRef.current?.click()}
       >
         {preview ? (
-          <img src={preview} alt="预览" className="preview-img" />
+          <div className="preview-wrapper">
+            <img src={preview} alt="预览" className="preview-img" />
+            <div className="preview-actions">
+              <button className="action-btn re-recognize" onClick={(e) => { e.stopPropagation(); handleReRecognize() }} disabled={loading}>
+                🔄 重新识别
+              </button>
+              <button className="action-btn re-upload" onClick={(e) => { e.stopPropagation(); handleReset() }}>
+                🗑️ 清除重选
+              </button>
+            </div>
+          </div>
         ) : (
           <div className="upload-hint">
             <span className="upload-icon">📁</span>
-            <p>拖拽图片到此处，或点击上传</p>
+            <p>拖拽图片到此处、点击上传，或 Ctrl+V 粘贴</p>
             <p className="hint-sub">{mode === 'plate' ? '支持车牌图片' : '支持单个字符图片'}</p>
           </div>
         )}
         <input
-          id="file-input"
+          ref={fileInputRef}
           type="file"
           accept="image/*"
           style={{ display: 'none' }}
-          onChange={(e) => handleFile(e.target.files[0])}
+          onChange={(e) => { handleFile(e.target.files[0]); e.target.value = '' }}
         />
       </div>
 
@@ -121,11 +191,11 @@ function App() {
             <div className="images-row">
               <div className="img-box">
                 <p>灰度图</p>
-                <img src={`data:image/png;base64,${result.gray_image}`} alt="灰度" />
+                <img src={`data:image/png;base64,${result.gray_image}`} alt="灰度" onClick={() => setZoomImg(`data:image/png;base64,${result.gray_image}`)} />
               </div>
               <div className="img-box">
                 <p>FFT 高通特征</p>
-                <img src={`data:image/png;base64,${result.fft_image}`} alt="FFT" />
+                <img src={`data:image/png;base64,${result.fft_image}`} alt="FFT" onClick={() => setZoomImg(`data:image/png;base64,${result.fft_image}`)} />
               </div>
             </div>
             <div className="top5">
@@ -153,8 +223,8 @@ function App() {
                 <div className="char-card-char">{ch.character}</div>
                 <div className="char-card-conf">{(ch.confidence * 100).toFixed(1)}%</div>
                 <div className="char-card-images">
-                  <img src={`data:image/png;base64,${ch.gray_image}`} alt="灰度" title="灰度图" />
-                  <img src={`data:image/png;base64,${ch.fft_image}`} alt="FFT" title="FFT特征" />
+                  <img src={`data:image/png;base64,${ch.gray_image}`} alt="灰度" title="灰度图" onClick={() => setZoomImg(`data:image/png;base64,${ch.gray_image}`)} />
+                  <img src={`data:image/png;base64,${ch.fft_image}`} alt="FFT" title="FFT特征" onClick={() => setZoomImg(`data:image/png;base64,${ch.fft_image}`)} />
                 </div>
                 <div className="char-card-top5">
                   {ch.top5.slice(0, 3).map((item, j) => (
@@ -191,6 +261,18 @@ function App() {
             </table>
             <button onClick={() => setModelInfo(null)}>关闭</button>
           </div>
+        </div>
+      )}
+      {zoomImg && (
+        <div className="zoom-overlay" onClick={() => setZoomImg(null)}>
+          <img src={zoomImg} alt="放大" className="zoom-img" onClick={(e) => e.stopPropagation()} />
+          <button className="zoom-close" onClick={() => setZoomImg(null)}>✕</button>
+        </div>
+      )}
+      {zoomImg && (
+        <div className="zoom-overlay" onClick={() => setZoomImg(null)}>
+          <img src={zoomImg} alt="放大" className="zoom-img" onClick={(e) => e.stopPropagation()} />
+          <button className="zoom-close" onClick={() => setZoomImg(null)}>✕</button>
         </div>
       )}
     </div>

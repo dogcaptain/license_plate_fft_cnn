@@ -160,45 +160,58 @@ def process_all(max_images_per_split=None):
 
 
 def split_train_val_test():
-    """将字符数据集划分为训练集/验证集/测试集。"""
+    """将字符数据集划分为训练集/验证集/测试集。
+
+    从已有的train目录中随机抽取部分作为test集。
+    """
     if not os.path.exists(CHAR_DIR):
         print(f"[错误] 字符目录不存在: {CHAR_DIR}")
         return
+
+    import random
 
     for label_dir in sorted(os.listdir(CHAR_DIR)):
         label_path = os.path.join(CHAR_DIR, label_dir)
         if not os.path.isdir(label_path):
             continue
 
-        if os.path.exists(os.path.join(label_path, "train")):
+        train_dir = os.path.join(label_path, "train")
+        test_dir = os.path.join(label_path, "test")
+
+        # 如果test目录已存在，跳过
+        if os.path.exists(test_dir):
             continue
 
-        files = [f for f in os.listdir(label_path) if f.endswith((".jpg", ".png"))]
+        # 如果train目录不存在，跳过
+        if not os.path.exists(train_dir):
+            continue
+
+        files = [f for f in os.listdir(train_dir) if f.endswith((".jpg", ".png"))]
         if len(files) == 0:
             continue
 
-        import random
         random.shuffle(files)
 
         n = len(files)
-        n_train = int(n * TRAIN_RATIO)
-        n_val = int(n * VAL_RATIO)
+        # 从train中分出TEST_RATIO比例作为test集
+        n_test = int(n * 0.1)  # 10%作为测试集
 
-        splits = {
-            "train": files[:n_train],
-            "val": files[n_train:n_train + n_val],
-            "test": files[n_train + n_val:]
-        }
+        test_files = files[:n_test]
+        train_files = files[n_test:]
 
-        for split_name, split_files in splits.items():
-            split_dir = os.path.join(label_path, split_name)
-            os.makedirs(split_dir, exist_ok=True)
-            for f in split_files:
-                src = os.path.join(label_path, f)
-                dst = os.path.join(split_dir, f)
-                shutil.move(src, dst)
+        # 创建test目录
+        os.makedirs(test_dir, exist_ok=True)
 
-    print("数据集划分完成（train/val/test）！")
+        # 移动test文件
+        for f in test_files:
+            src = os.path.join(train_dir, f)
+            dst = os.path.join(test_dir, f)
+            shutil.move(src, dst)
+
+        # 更新train目录（删除已移出的文件对应的旧train目录，重新创建）
+        # 实际上文件已经移出，train目录自动更新了
+
+    print("数据集划分完成（从train中分出test）！")
 
 
 def print_dataset_stats():

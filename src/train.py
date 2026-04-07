@@ -168,7 +168,7 @@ class Logger:
 
 def train(mode="spatial", epochs=None, batch_size=None, lr=None, device=None,
           num_workers=None, pin_memory=None, use_amp=None, log_tool="tensorboard",
-          val_interval=1, weight_decay=1e-4, dropout=0.5, label_smoothing=0.1,
+          val_interval=5, weight_decay=1e-4, dropout=0.5, label_smoothing=0.1,
           use_multi_gpu=False, gpu_ids=None):
     """
     训练模型
@@ -448,6 +448,12 @@ def main():
     parser.add_argument("--label_smoothing", type=float, default=0.1, help="标签平滑系数 (默认0.1)")
     parser.add_argument("--multi_gpu", action="store_true", help="使用多GPU训练")
     parser.add_argument("--gpu_ids", type=str, default=None, help="使用的GPU ID，如 '0,1' (默认使用所有)")
+    parser.add_argument(
+         "--val_interval",
+        type = int,
+        default = 5,
+        help = "每隔多少个epoch验证一次 (默认1，即每轮都验证)",
+    )
 
     args = parser.parse_args()
 

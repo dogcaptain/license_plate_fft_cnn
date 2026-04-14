@@ -52,6 +52,9 @@ data/characters/
 # === Results/Outputs ===
 results/*
 !results/.gitkeep
+# Keep the published checkpoints in the repo for demo/inference use.
+!results/best_model_baseline.pth
+!results/best_model_fft.pth
 
 # === Logs ===
 *.log
